@@ -3,115 +3,133 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chuyển giọng nói thành văn bản</title>
+    <title>Stream Giọng Nói (Local-Whisper)</title>
     <style>
         body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; background-color: #f0f2f5; }
-        #recordButton {
-            padding: 20px;
-            font-size: 1.2em;
-            cursor: pointer;
-            border-radius: 50%;
-            border: none;
-            width: 100px;
-            height: 100px;
-            background-color: #dc3545;
-            color: white;
-            transition: background-color 0.3s, transform 0.1s;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-        }
-        #recordButton.recording {
-            background-color: #28a745;
-            transform: scale(1.1);
-        }
-        #transcript {
-            margin-top: 30px;
-            width: 80%;
-            max-width: 600px;
-            padding: 20px;
-            border: 1px solid #ccc;
-            border-radius: 8px;
-            min-height: 100px;
-            background-color: white;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        }
-        .final-transcript { font-weight: bold; }
+        #recordButton { padding: 20px; font-size: 1.2em; cursor: pointer; border-radius: 50%; border: none; width: 100px; height: 100px; background-color: #007bff; color: white; transition: background-color 0.3s, transform 0.1s; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
+        #recordButton.recording { background-color: #dc3545; transform: scale(1.1); }
+        #transcript { margin-top: 30px; width: 80%; max-width: 600px; padding: 20px; border: 1px solid #ccc; border-radius: 8px; min-height: 100px; background-color: white; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        #status { margin-top: 15px; color: #6c757d; }
     </style>
 </head>
 <body>
 
-    <button id="recordButton">Nhấn nói</button>
+    <button id="recordButton">Nhấn Nói</button>
+    <div id="status">Trạng thái: Sẵn sàng</div>
     <div id="transcript">
         <p><em>Văn bản chuyển đổi sẽ xuất hiện ở đây...</em></p>
     </div>
 
     <script>
         const recordButton = document.getElementById('recordButton');
+        const statusDiv = document.getElementById('status');
         const transcriptDiv = document.getElementById('transcript');
-        let recognition;
+
         let isRecording = false;
+        let mediaRecorder;
+        let ws;
+        let audioContext;
+        let processor;
+        let source;
 
-        // Kiểm tra trình duyệt có hỗ trợ Web Speech API không
-        window.SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!window.SpeechRecognition) {
-            alert("Trình duyệt của bạn không hỗ trợ Speech Recognition. Hãy thử Chrome hoặc Edge.");
-        } else {
-            recognition = new SpeechRecognition();
-            recognition.continuous = true; // Nhận dạng liên tục
-            recognition.interimResults = true; // Trả về kết quả tạm thời
-            recognition.lang = 'vi-VN'; // Đặt ngôn ngữ là Tiếng Việt
-
-            recognition.onstart = () => {
-                isRecording = true;
-                recordButton.textContent = 'Đang ghi...';
-                recordButton.classList.add('recording');
-                transcriptDiv.innerHTML = '<p><em>Đang nghe...</em></p>';
-            };
-
-            recognition.onend = () => {
-                isRecording = false;
-                recordButton.textContent = 'Nhấn nói';
-                recordButton.classList.remove('recording');
-            };
-
-            recognition.onerror = (event) => {
-                console.error("Lỗi Speech Recognition:", event.error);
-                if(event.error === 'not-allowed') {
-                    alert('Bạn đã chặn quyền truy cập micro. Vui lòng cho phép để sử dụng tính năng này.');
-                }
-            };
-
-            recognition.onresult = (event) => {
-                let interimTranscript = '';
-                let finalTranscript = '';
-
-                for (let i = event.resultIndex; i < event.results.length; ++i) {
-                    if (event.results[i].isFinal) {
-                        finalTranscript += event.results[i][0].transcript;
-                    } else {
-                        interimTranscript += event.results[i][0].transcript;
-                    }
-                }
-                
-                // Hiển thị kết quả trực tiếp lên web
-                transcriptDiv.innerHTML = `<span class="final-transcript">${finalTranscript}</span><span class="interim-transcript">${interimTranscript}</span>`;
-            };
-        }
+        const CHUNK_DURATION_MS = 1000; // Gửi dữ liệu mỗi 1 giây
 
         recordButton.addEventListener('click', () => {
-            if (!isRecording) {
-                // Yêu cầu quyền truy cập micro và bắt đầu nhận dạng
-                navigator.mediaDevices.getUserMedia({ audio: true })
-                    .then(() => {
-                        recognition.start();
-                    })
-                    .catch((err) => {
-                        alert("Không thể truy cập micro. Vui lòng cấp quyền.");
-                        console.error("Lỗi getUserMedia:", err);
-                    });
+            if (isRecording) {
+                stopRecording();
             } else {
-                recognition.stop();
+                startRecording();
             }
         });
+
+        function connectWebSocket() {
+            // Xác định địa chỉ WebSocket
+            const protocol = window.location.protocol === 'https' ? 'wss' : 'ws';
+            const wsUrl = `${protocol}://${window.location.host}/stream`;
+            
+            statusDiv.textContent = 'Đang kết nối tới server...';
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                statusDiv.textContent = 'Kết nối thành công. Bắt đầu ghi âm...';
+                recordButton.textContent = 'Dừng';
+                recordButton.classList.add('recording');
+                isRecording = true;
+                startMicrophone();
+            };
+
+            ws.onmessage = (event) => {
+                // Nhận văn bản từ server và hiển thị
+                transcriptDiv.textContent = event.data;
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket Error:', error);
+                statusDiv.textContent = 'Lỗi kết nối WebSocket.';
+                stopRecordingCleanup();
+            };
+
+            ws.onclose = () => {
+                statusDiv.textContent = 'Đã ngắt kết nối. Sẵn sàng.';
+                stopRecordingCleanup();
+            };
+        }
+        
+        function startRecording() {
+            navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+                .then(stream => {
+                    connectWebSocket();
+                }).catch(err => {
+                    alert('Không thể truy cập micro. Vui lòng cấp quyền.');
+                    console.error('getUserMedia error:', err);
+                });
+        }
+        
+        function startMicrophone() {
+            navigator.mediaDevices.getUserMedia({ audio: true, video: false }).then(stream => {
+                 audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: 16000 // Yêu cầu sample rate 16000Hz
+                });
+                source = audioContext.createMediaStreamSource(stream);
+                processor = audioContext.createScriptProcessor(4096, 1, 1); // bufferSize, inputChannels, outputChannels
+
+                processor.onaudioprocess = (e) => {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        // Lấy dữ liệu PCM float32 và gửi đi
+                        const float32Array = e.inputBuffer.getChannelData(0);
+                        ws.send(float32Array.buffer);
+                    }
+                };
+                
+                source.connect(processor);
+                processor.connect(audioContext.destination);
+            });
+        }
+        
+        function stopRecording() {
+            if (ws) {
+                ws.close();
+            }
+        }
+
+        function stopRecordingCleanup() {
+            if (processor) {
+                processor.disconnect();
+                processor = null;
+            }
+            if (source) {
+                source.disconnect();
+                source = null;
+            }
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+            }
+            recordButton.textContent = 'Nhấn Nói';
+            recordButton.classList.remove('recording');
+            isRecording = false;
+        }
+
     </script>
 </body>
 </html>
