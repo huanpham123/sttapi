@@ -1,103 +1,117 @@
 <!DOCTYPE html>
 <html lang="vi">
 <head>
-  <meta charset="UTF-8">
-  <title>Flask STT Demo</title>
-  <style>
-    body { font-family: sans-serif; padding: 2rem; }
-    #btn { padding: 1rem 2rem; font-size: 1.2rem; }
-    #transcript { margin-top: 1rem; white-space: pre-wrap; }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chuyển giọng nói thành văn bản</title>
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; background-color: #f0f2f5; }
+        #recordButton {
+            padding: 20px;
+            font-size: 1.2em;
+            cursor: pointer;
+            border-radius: 50%;
+            border: none;
+            width: 100px;
+            height: 100px;
+            background-color: #dc3545;
+            color: white;
+            transition: background-color 0.3s, transform 0.1s;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        }
+        #recordButton.recording {
+            background-color: #28a745;
+            transform: scale(1.1);
+        }
+        #transcript {
+            margin-top: 30px;
+            width: 80%;
+            max-width: 600px;
+            padding: 20px;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            min-height: 100px;
+            background-color: white;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .final-transcript { font-weight: bold; }
+    </style>
 </head>
 <body>
-  <h1>Hold to Talk</h1>
-  <button id="btn">Giữ nút và nói</button>
-  <div id="status">Trạng thái: idle</div>
-  <div id="transcript"></div>
 
-  <script>
-    let mediaRecorder, audioChunks = [];
-    const btn = document.getElementById('btn');
-    const status = document.getElementById('status');
-    const transcriptDiv = document.getElementById('transcript');
+    <button id="recordButton">Nhấn nói</button>
+    <div id="transcript">
+        <p><em>Văn bản chuyển đổi sẽ xuất hiện ở đây...</em></p>
+    </div>
 
-    navigator.mediaDevices.getUserMedia({ audio: true })
-      .then(stream => {
-        mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-        mediaRecorder.addEventListener('dataavailable', e => audioChunks.push(e.data));
-        mediaRecorder.addEventListener('stop', () => {
-          const blob = new Blob(audioChunks, { type: 'audio/webm' });
-          audioChunks = [];
-          status.textContent = 'Đang gửi lên server...';
-          blobToWave(blob, 16000).then(wavBlob => {
-            fetch('/recognize', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/octet-stream' },
-              body: wavBlob
-            })
-            .then(res => res.json())
-            .then(data => {
-              transcriptDiv.textContent = data.transcript;
-              status.textContent = 'Idle';
-            })
-            .catch(() => status.textContent = 'Lỗi kết nối');
-          });
-        });
-      })
-      .catch(() => status.textContent = 'Không có quyền microphone');
+    <script>
+        const recordButton = document.getElementById('recordButton');
+        const transcriptDiv = document.getElementById('transcript');
+        let recognition;
+        let isRecording = false;
 
-    btn.addEventListener('mousedown', () => {
-      if (mediaRecorder.state === 'inactive') {
-        mediaRecorder.start();
-        status.textContent = 'Recording…';
-      }
-    });
-    btn.addEventListener('mouseup', () => {
-      if (mediaRecorder.state === 'recording') mediaRecorder.stop();
-    });
+        // Kiểm tra trình duyệt có hỗ trợ Web Speech API không
+        window.SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!window.SpeechRecognition) {
+            alert("Trình duyệt của bạn không hỗ trợ Speech Recognition. Hãy thử Chrome hoặc Edge.");
+        } else {
+            recognition = new SpeechRecognition();
+            recognition.continuous = true; // Nhận dạng liên tục
+            recognition.interimResults = true; // Trả về kết quả tạm thời
+            recognition.lang = 'vi-VN'; // Đặt ngôn ngữ là Tiếng Việt
 
-    async function blobToWave(blob, targetSampleRate) {
-      const arrayBuffer = await blob.arrayBuffer();
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const decoded = await audioCtx.decodeAudioData(arrayBuffer);
-      const offlineCtx = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(
-        decoded.numberOfChannels,
-        decoded.duration * targetSampleRate,
-        targetSampleRate
-      );
-      const source = offlineCtx.createBufferSource();
-      source.buffer = decoded;
-      source.connect(offlineCtx.destination);
-      source.start(0);
-      const rendered = await offlineCtx.startRendering();
-      return new Blob([audioBufferToWav(rendered)], { type: 'application/octet-stream' });
-    }
+            recognition.onstart = () => {
+                isRecording = true;
+                recordButton.textContent = 'Đang ghi...';
+                recordButton.classList.add('recording');
+                transcriptDiv.innerHTML = '<p><em>Đang nghe...</em></p>';
+            };
 
-    function audioBufferToWav(buffer) {
-      const numCh = buffer.numberOfChannels;
-      const length = buffer.length * numCh * 2 + 44;
-      const buf = new ArrayBuffer(length);
-      const view = new DataView(buf);
-      function writeStr(offset, s) { for (let i=0;i<s.length;i++) view.setUint8(offset+i, s.charCodeAt(i)); }
-      writeStr(0, 'RIFF'); view.setUint32(4, 36 + buffer.length * numCh * 2, true);
-      writeStr(8, 'WAVE'); writeStr(12, 'fmt '); view.setUint32(16,16,true);
-      view.setUint16(20,1,true); view.setUint16(22,numCh,true);
-      view.setUint32(24,buffer.sampleRate,true);
-      view.setUint32(28,buffer.sampleRate*numCh*2,true);
-      view.setUint16(32,numCh*2,true); view.setUint16(34,16,true);
-      writeStr(36,'data'); view.setUint32(40,buffer.length*numCh*2,true);
-      let offset=44;
-      const chanData = [];
-      for (let c=0;c<numCh;c++) chanData.push(buffer.getChannelData(c));
-      for (let i=0;i<buffer.length;i++){
-        for (let c=0;c<numCh;c++){
-          let s = Math.max(-1,Math.min(1, chanData[c][i]));
-          view.setInt16(offset, s<0 ? s*0x8000 : s*0x7FFF, true);
-          offset+=2;
+            recognition.onend = () => {
+                isRecording = false;
+                recordButton.textContent = 'Nhấn nói';
+                recordButton.classList.remove('recording');
+            };
+
+            recognition.onerror = (event) => {
+                console.error("Lỗi Speech Recognition:", event.error);
+                if(event.error === 'not-allowed') {
+                    alert('Bạn đã chặn quyền truy cập micro. Vui lòng cho phép để sử dụng tính năng này.');
+                }
+            };
+
+            recognition.onresult = (event) => {
+                let interimTranscript = '';
+                let finalTranscript = '';
+
+                for (let i = event.resultIndex; i < event.results.length; ++i) {
+                    if (event.results[i].isFinal) {
+                        finalTranscript += event.results[i][0].transcript;
+                    } else {
+                        interimTranscript += event.results[i][0].transcript;
+                    }
+                }
+                
+                // Hiển thị kết quả trực tiếp lên web
+                transcriptDiv.innerHTML = `<span class="final-transcript">${finalTranscript}</span><span class="interim-transcript">${interimTranscript}</span>`;
+            };
         }
-      }
-      return view;
-    }
-  </script>
+
+        recordButton.addEventListener('click', () => {
+            if (!isRecording) {
+                // Yêu cầu quyền truy cập micro và bắt đầu nhận dạng
+                navigator.mediaDevices.getUserMedia({ audio: true })
+                    .then(() => {
+                        recognition.start();
+                    })
+                    .catch((err) => {
+                        alert("Không thể truy cập micro. Vui lòng cấp quyền.");
+                        console.error("Lỗi getUserMedia:", err);
+                    });
+            } else {
+                recognition.stop();
+            }
+        });
+    </script>
 </body>
 </html>
