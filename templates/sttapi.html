@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>Flask STT Demo</title>
+  <style>
+    body { font-family: sans-serif; padding: 2rem; }
+    #btn { padding: 1rem 2rem; font-size: 1.2rem; }
+    #transcript { margin-top: 1rem; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Hold to Talk</h1>
+  <button id="btn">Giữ nút và nói</button>
+  <div id="status">Trạng thái: idle</div>
+  <div id="transcript"></div>
+
+  <script>
+    let mediaRecorder, audioChunks = [];
+    const btn = document.getElementById('btn');
+    const status = document.getElementById('status');
+    const transcriptDiv = document.getElementById('transcript');
+
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then(stream => {
+        mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+        mediaRecorder.addEventListener('dataavailable', e => {
+          audioChunks.push(e.data);
+        });
+        mediaRecorder.addEventListener('stop', () => {
+          const blob = new Blob(audioChunks, { type: 'audio/webm' });
+          audioChunks = [];
+          status.textContent = 'Đang gửi lên server...';
+          // chuyển WebM sang WAV Linear16 16kHz
+          blobToWave(blob, 16000).then(wavBlob => {
+            fetch('/recognize', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/octet-stream' },
+              body: wavBlob
+            })
+            .then(res => res.json())
+            .then(data => {
+              transcriptDiv.textContent = data.transcript;
+              status.textContent = 'Idle';
+            })
+            .catch(err => {
+              console.error(err);
+              status.textContent = 'Lỗi kết nối';
+            });
+          });
+        });
+      })
+      .catch(err => {
+        console.error('Không thể truy cập microphone', err);
+        status.textContent = 'Không có quyền microphone';
+      });
+
+    // Khi giữ nút → bắt đầu ghi
+    btn.addEventListener('mousedown', () => {
+      if (mediaRecorder && mediaRecorder.state === 'inactive') {
+        mediaRecorder.start();
+        status.textContent = 'Recording…';
+      }
+    });
+    // Khi thả nút → dừng ghi & xử lý
+    btn.addEventListener('mouseup', () => {
+      if (mediaRecorder && mediaRecorder.state === 'recording') {
+        mediaRecorder.stop();
+      }
+    });
+
+    // Hàm tiện ích: chuyển WebM (Opus) sang WAV Linear16 16kHz
+    // Sử dụng AudioContext để decode rồi re‑encode
+    async function blobToWave(blob, targetSampleRate) {
+      const arrayBuffer = await blob.arrayBuffer();
+      const ctx = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, targetSampleRate * 1, targetSampleRate);
+      const audioBuffer = await new AudioContext().decodeAudioData(arrayBuffer);
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(ctx.destination);
+      source.start(0);
+      const rendered = await ctx.startRendering();
+      const wav = audioBufferToWav(rendered);
+      return new Blob([wav], { type: 'application/octet-stream' });
+    }
+
+    // Tạo WAV header + PCM16 từ AudioBuffer
+    function audioBufferToWav(buffer) {
+      const numOfChan = buffer.numberOfChannels;
+      const length = buffer.length * numOfChan * 2 + 44;
+      const bufferArr = new ArrayBuffer(length);
+      const view = new DataView(bufferArr);
+
+      /* RIFF identifier */
+      writeString(view, 0, 'RIFF');
+      /* file length */
+      view.setUint32(4, 36 + buffer.length * numOfChan * 2, true);
+      /* RIFF type */
+      writeString(view, 8, 'WAVE');
+      /* format chunk identifier */
+      writeString(view, 12, 'fmt ');
+      /* format chunk length */
+      view.setUint32(16, 16, true);
+      /* sample format (raw) */
+      view.setUint16(20, 1, true);
+      /* channel count */
+      view.setUint16(22, numOfChan, true);
+      /* sample rate */
+      view.setUint32(24, buffer.sampleRate, true);
+      /* byte rate (sampleRate * blockAlign) */
+      view.setUint32(28, buffer.sampleRate * numOfChan * 2, true);
+      /* block align (channel count * bytes/sample) */
+      view.setUint16(32, numOfChan * 2, true);
+      /* bits per sample */
+      view.setUint16(34, 16, true);
+      /* data chunk identifier */
+      writeString(view, 36, 'data');
+      /* data chunk length */
+      view.setUint32(40, buffer.length * numOfChan * 2, true);
+
+      // write interleaved PCM
+      let offset = 44;
+      const channels = [];
+      for (let i = 0; i < numOfChan; i++)
+        channels.push(buffer.getChannelData(i));
+      for (let i = 0; i < buffer.length; i++) {
+        for (let ch = 0; ch < numOfChan; ch++) {
+          let sample = Math.max(-1, Math.min(1, channels[ch][i]));
+          sample = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+          view.setInt16(offset, sample, true);
+          offset += 2;
+        }
+      }
+      return view;
+    }
+    function writeString(view, offset, str) {
+      for (let i = 0; i < str.length; i++)
+        view.setUint8(offset + i, str.charCodeAt(i));
+    }
+  </script>
+</body>
+</html>
