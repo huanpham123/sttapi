@@ -1,6 +1,3 @@
 Flask
-faster-whisper
-torch
-torchaudio
-simple-websocket
-numpy
+SpeechRecognition
+Werkzeug
