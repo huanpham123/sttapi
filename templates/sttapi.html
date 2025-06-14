@@ -24,14 +24,11 @@
     navigator.mediaDevices.getUserMedia({ audio: true })
       .then(stream => {
         mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-        mediaRecorder.addEventListener('dataavailable', e => {
-          audioChunks.push(e.data);
-        });
+        mediaRecorder.addEventListener('dataavailable', e => audioChunks.push(e.data));
         mediaRecorder.addEventListener('stop', () => {
           const blob = new Blob(audioChunks, { type: 'audio/webm' });
           audioChunks = [];
           status.textContent = 'Đang gửi lên server...';
-          // chuyển WebM sang WAV Linear16 16kHz
           blobToWave(blob, 16000).then(wavBlob => {
             fetch('/recognize', {
               method: 'POST',
@@ -43,99 +40,63 @@
               transcriptDiv.textContent = data.transcript;
               status.textContent = 'Idle';
             })
-            .catch(err => {
-              console.error(err);
-              status.textContent = 'Lỗi kết nối';
-            });
+            .catch(() => status.textContent = 'Lỗi kết nối');
           });
         });
       })
-      .catch(err => {
-        console.error('Không thể truy cập microphone', err);
-        status.textContent = 'Không có quyền microphone';
-      });
+      .catch(() => status.textContent = 'Không có quyền microphone');
 
-    // Khi giữ nút → bắt đầu ghi
     btn.addEventListener('mousedown', () => {
-      if (mediaRecorder && mediaRecorder.state === 'inactive') {
+      if (mediaRecorder.state === 'inactive') {
         mediaRecorder.start();
         status.textContent = 'Recording…';
       }
     });
-    // Khi thả nút → dừng ghi & xử lý
     btn.addEventListener('mouseup', () => {
-      if (mediaRecorder && mediaRecorder.state === 'recording') {
-        mediaRecorder.stop();
-      }
+      if (mediaRecorder.state === 'recording') mediaRecorder.stop();
     });
 
-    // Hàm tiện ích: chuyển WebM (Opus) sang WAV Linear16 16kHz
-    // Sử dụng AudioContext để decode rồi re‑encode
     async function blobToWave(blob, targetSampleRate) {
       const arrayBuffer = await blob.arrayBuffer();
-      const ctx = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, targetSampleRate * 1, targetSampleRate);
-      const audioBuffer = await new AudioContext().decodeAudioData(arrayBuffer);
-      const source = ctx.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(ctx.destination);
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const decoded = await audioCtx.decodeAudioData(arrayBuffer);
+      const offlineCtx = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(
+        decoded.numberOfChannels,
+        decoded.duration * targetSampleRate,
+        targetSampleRate
+      );
+      const source = offlineCtx.createBufferSource();
+      source.buffer = decoded;
+      source.connect(offlineCtx.destination);
       source.start(0);
-      const rendered = await ctx.startRendering();
-      const wav = audioBufferToWav(rendered);
-      return new Blob([wav], { type: 'application/octet-stream' });
+      const rendered = await offlineCtx.startRendering();
+      return new Blob([audioBufferToWav(rendered)], { type: 'application/octet-stream' });
     }
 
-    // Tạo WAV header + PCM16 từ AudioBuffer
     function audioBufferToWav(buffer) {
-      const numOfChan = buffer.numberOfChannels;
-      const length = buffer.length * numOfChan * 2 + 44;
-      const bufferArr = new ArrayBuffer(length);
-      const view = new DataView(bufferArr);
-
-      /* RIFF identifier */
-      writeString(view, 0, 'RIFF');
-      /* file length */
-      view.setUint32(4, 36 + buffer.length * numOfChan * 2, true);
-      /* RIFF type */
-      writeString(view, 8, 'WAVE');
-      /* format chunk identifier */
-      writeString(view, 12, 'fmt ');
-      /* format chunk length */
-      view.setUint32(16, 16, true);
-      /* sample format (raw) */
-      view.setUint16(20, 1, true);
-      /* channel count */
-      view.setUint16(22, numOfChan, true);
-      /* sample rate */
-      view.setUint32(24, buffer.sampleRate, true);
-      /* byte rate (sampleRate * blockAlign) */
-      view.setUint32(28, buffer.sampleRate * numOfChan * 2, true);
-      /* block align (channel count * bytes/sample) */
-      view.setUint16(32, numOfChan * 2, true);
-      /* bits per sample */
-      view.setUint16(34, 16, true);
-      /* data chunk identifier */
-      writeString(view, 36, 'data');
-      /* data chunk length */
-      view.setUint32(40, buffer.length * numOfChan * 2, true);
-
-      // write interleaved PCM
-      let offset = 44;
-      const channels = [];
-      for (let i = 0; i < numOfChan; i++)
-        channels.push(buffer.getChannelData(i));
-      for (let i = 0; i < buffer.length; i++) {
-        for (let ch = 0; ch < numOfChan; ch++) {
-          let sample = Math.max(-1, Math.min(1, channels[ch][i]));
-          sample = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
-          view.setInt16(offset, sample, true);
-          offset += 2;
+      const numCh = buffer.numberOfChannels;
+      const length = buffer.length * numCh * 2 + 44;
+      const buf = new ArrayBuffer(length);
+      const view = new DataView(buf);
+      function writeStr(offset, s) { for (let i=0;i<s.length;i++) view.setUint8(offset+i, s.charCodeAt(i)); }
+      writeStr(0, 'RIFF'); view.setUint32(4, 36 + buffer.length * numCh * 2, true);
+      writeStr(8, 'WAVE'); writeStr(12, 'fmt '); view.setUint32(16,16,true);
+      view.setUint16(20,1,true); view.setUint16(22,numCh,true);
+      view.setUint32(24,buffer.sampleRate,true);
+      view.setUint32(28,buffer.sampleRate*numCh*2,true);
+      view.setUint16(32,numCh*2,true); view.setUint16(34,16,true);
+      writeStr(36,'data'); view.setUint32(40,buffer.length*numCh*2,true);
+      let offset=44;
+      const chanData = [];
+      for (let c=0;c<numCh;c++) chanData.push(buffer.getChannelData(c));
+      for (let i=0;i<buffer.length;i++){
+        for (let c=0;c<numCh;c++){
+          let s = Math.max(-1,Math.min(1, chanData[c][i]));
+          view.setInt16(offset, s<0 ? s*0x8000 : s*0x7FFF, true);
+          offset+=2;
         }
       }
       return view;
-    }
-    function writeString(view, offset, str) {
-      for (let i = 0; i < str.length; i++)
-        view.setUint8(offset + i, str.charCodeAt(i));
     }
   </script>
 </body>
