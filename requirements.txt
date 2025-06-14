@@ -1,4 +1,2 @@
 Flask
-flask-cors
 google-cloud-speech
-google-auth
