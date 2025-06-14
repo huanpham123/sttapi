@@ -1,12 +1,15 @@
 {
   "version": 2,
   "builds": [
-    { "src": "sttapi.py", "use": "@vercel/python" }
+    {
+      "src": "sttapi.py",
+      "use": "@vercel/python"
+    }
   ],
   "routes": [
-    { "src": "/(.*)", "dest": "sttapi.py" }
-  ],
-  "env": {
-    "GOOGLE_CREDENTIALS_JSON": "@GOOGLE_CREDENTIALS_JSON"
-  }
+    {
+      "src": "/(.*)",
+      "dest": "sttapi.py"
+    }
+  ]
 }
