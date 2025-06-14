@@ -11,18 +11,19 @@ def index():
 
 @app.route('/api/stream', methods=['POST'])
 def stream_audio():
+    # Nhận thẳng raw WAV bytes từ client
+    audio_bytes = request.get_data()
+    audio_file = BytesIO(audio_bytes)
     try:
-        audio_data = request.data
-        audio_file = BytesIO(audio_data)
         with sr.AudioFile(audio_file) as source:
             audio = recognizer.record(source)
 
         text = recognizer.recognize_google(audio, language='vi-VN')
-        return jsonify({'text': text, 'status': 'success'})
+        return jsonify({'status': 'success', 'text': text})
     except sr.UnknownValueError:
-        return jsonify({'text': '', 'status': 'no-speech'})
+        return jsonify({'status': 'no-speech', 'text': ''})
     except sr.RequestError as e:
-        return jsonify({'text': f"Lỗi: {str(e)}", 'status': 'error'})
+        return jsonify({'status': 'error', 'text': f'Lỗi request: {e}'})
 
 if __name__ == '__main__':
     app.run(debug=True)
