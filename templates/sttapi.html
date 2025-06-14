@@ -2,63 +2,93 @@
 <html lang="vi">
 <head>
   <meta charset="UTF-8">
-  <title>STT Button</title>
+  <title>Speech‑to‑Text Demo</title>
   <style>
-    body { font-family: Arial; padding: 20px; }
-    button { padding: 15px 30px; font-size: 18px; background: #4CAF50; color: white; border: none; border-radius: 6px; cursor: pointer; }
-    button.recording { background: red; }
-    #text { margin-top: 20px; border: 1px solid #ddd; padding: 10px; min-height: 100px; white-space: pre-wrap; background: #f9f9f9; }
+    body { font-family: Arial; padding: 20px; max-width: 600px; margin: auto; }
+    button {
+      padding: 15px 30px; font-size: 18px;
+      background: #4CAF50; color: #fff;
+      border: none; border-radius: 6px; cursor: pointer;
+      transition: background 0.2s;
+    }
+    button.recording { background: #f44336; }
+    #text { margin-top: 20px; padding: 10px; border: 1px solid #ddd;
+            min-height: 100px; background: #f9f9f9; white-space: pre-wrap; }
+    #status { margin-top: 10px; font-style: italic; color: #666; }
   </style>
 </head>
 <body>
   <h2>Nhấn giữ để nói</h2>
-  <button id="recordBtn">🎤 Nhấn giữ</button>
+  <button id="btn">🎤 Giữ để nói</button>
+  <div id="status">Trạng thái: sẵn sàng</div>
   <div id="text"></div>
 
   <script>
-    const btn = document.getElementById('recordBtn');
-    const textDiv = document.getElementById('text');
-    let mediaRecorder;
-    let audioChunks = [];
+    const btn       = document.getElementById('btn');
+    const statusDiv = document.getElementById('status');
+    const textDiv   = document.getElementById('text');
 
-    btn.addEventListener('mousedown', async () => {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      mediaRecorder = new MediaRecorder(stream);
+    let recorder, audioChunks, stream;
+
+    async function startRecording() {
+      statusDiv.textContent = 'Trạng thái: khởi tạo microphone...';
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Yêu cầu ghi WAV (nếu browser hỗ trợ)
+      recorder = new MediaRecorder(stream, { mimeType: 'audio/wav' });
       audioChunks = [];
-
-      mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
-
-      mediaRecorder.onstop = async () => {
-        const blob = new Blob(audioChunks, { type: 'audio/wav' });
-        const arrayBuffer = await blob.arrayBuffer();
-        const response = await fetch('/api/stream', {
-          method: 'POST',
-          headers: { 'Content-Type': 'audio/wav' },
-          body: arrayBuffer
-        });
-        const result = await response.json();
-        if (result.status === 'success') textDiv.textContent += result.text + '\n';
-        else textDiv.textContent += '[Không nhận dạng được]\n';
+      recorder.ondataavailable = e => {
+        if (e.data && e.data.size > 0) audioChunks.push(e.data);
       };
-
-      mediaRecorder.start();
+      recorder.start();
+      statusDiv.textContent = 'Trạng thái: đang ghi âm...';
       btn.classList.add('recording');
+    }
+
+    function stopRecording() {
+      return new Promise(resolve => {
+        recorder.onstop = () => resolve();
+        recorder.stop();
+        btn.classList.remove('recording');
+        statusDiv.textContent = 'Trạng thái: đang xử lý...';
+        // stop all tracks
+        stream.getTracks().forEach(t => t.stop());
+      });
+    }
+
+    async function sendToServer() {
+      const blob = new Blob(audioChunks, { type: 'audio/wav' });
+      const arrayBuffer = await blob.arrayBuffer();
+      const res = await fetch('/api/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'audio/wav' },
+        body: arrayBuffer
+      });
+      const data = await res.json();
+      if (data.status === 'success') {
+        textDiv.textContent += data.text + '\n';
+      } else if (data.status === 'no-speech') {
+        textDiv.textContent += '[Không phát hiện giọng nói]\n';
+      } else {
+        textDiv.textContent += `[Lỗi: ${data.text}]\n`;
+      }
+      statusDiv.textContent = 'Trạng thái: sẵn sàng';
+    }
+
+    btn.addEventListener('mousedown', () => {
+      startRecording().catch(err => {
+        console.error(err);
+        statusDiv.textContent = 'Lỗi khi truy cập microphone';
+      });
     });
 
-    btn.addEventListener('mouseup', () => {
-      mediaRecorder.stop();
-      btn.classList.remove('recording');
+    btn.addEventListener('mouseup', async () => {
+      await stopRecording();
+      await sendToServer();
     });
 
-    // Mobile support
-    btn.addEventListener('touchstart', e => {
-      e.preventDefault();
-      btn.dispatchEvent(new Event('mousedown'));
-    });
-    btn.addEventListener('touchend', e => {
-      e.preventDefault();
-      btn.dispatchEvent(new Event('mouseup'));
-    });
+    // Touch support
+    btn.addEventListener('touchstart', e => { e.preventDefault(); btn.dispatchEvent(new Event('mousedown')); });
+    btn.addEventListener('touchend',   e => { e.preventDefault(); btn.dispatchEvent(new Event('mouseup')); });
   </script>
 </body>
 </html>
