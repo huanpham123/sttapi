@@ -1,16 +1,21 @@
 import os
-import io
+import json
 from flask import Flask, request, render_template, jsonify
 from flask_cors import CORS
+from google.oauth2 import service_account
 from google.cloud import speech
 
-# Khởi tạo Flask
-app = Flask(__name__)
-CORS(app)
+# --- Lấy credentials JSON từ biến môi trường và khởi tạo client ---
+creds_info = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+if not creds_info:
+    raise RuntimeError("Missing env var: GOOGLE_CREDENTIALS_JSON")
+creds_dict = json.loads(creds_info)
+credentials = service_account.Credentials.from_service_account_info(creds_dict)
+client = speech.SpeechClient(credentials=credentials)
 
-# Khởi tạo client của Google Speech-to-Text
-# Bạn cần set biến môi trường GOOGLE_APPLICATION_CREDENTIALS
-client = speech.SpeechClient()
+# --- Flask app setup ---
+app = Flask(__name__, template_folder="templates")
+CORS(app)
 
 @app.route('/')
 def index():
@@ -18,27 +23,18 @@ def index():
 
 @app.route('/recognize', methods=['POST'])
 def recognize():
-    """
-    Nhận một blob audio WAV (Linear16, 16kHz, mono) và trả về transcript.
-    """
     audio_bytes = request.data
     audio = speech.RecognitionAudio(content=audio_bytes)
-
     config = speech.RecognitionConfig(
         encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
         sample_rate_hertz=16000,
         language_code="vi-VN",
         enable_automatic_punctuation=True,
     )
-
-    # Gửi request sync
     response = client.recognize(config=config, audio=audio)
-
-    # Ghép tất cả kết quả
-    texts = [result.alternatives[0].transcript for result in response.results]
+    texts = [res.alternatives[0].transcript for res in response.results]
     return jsonify({'transcript': ' '.join(texts)})
 
 if __name__ == '__main__':
-    # Port do Vercel truyền vào qua env var PORT
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
