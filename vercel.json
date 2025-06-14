@@ -11,5 +11,11 @@
       "src": "/(.*)",
       "dest": "sttapi.py"
     }
+  ],
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "sttapi.py"
+    }
   ]
 }
