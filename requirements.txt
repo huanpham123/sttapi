@@ -1,4 +1,2 @@
 Flask
 SpeechRecognition
-Werkzeug
-python-dotenv
