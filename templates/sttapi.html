@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Speech to Text Streaming</title>
+    <title>Real-time Speech to Text</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -17,77 +17,95 @@
             min-height: 100px;
             margin: 20px 0;
             white-space: pre-wrap;
+            background-color: #f9f9f9;
         }
         #startButton {
-            padding: 10px 20px;
-            font-size: 16px;
+            padding: 15px 30px;
+            font-size: 18px;
             background-color: #4CAF50;
             color: white;
             border: none;
-            border-radius: 4px;
+            border-radius: 8px;
             cursor: pointer;
+            transition: all 0.3s;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
         }
-        #startButton:active {
-            background-color: #3e8e41;
+        #startButton:active, #startButton.recording {
+            background-color: #f44336;
+            transform: translateY(2px);
+            box-shadow: 0 2px 3px rgba(0, 0, 0, 0.1);
+        }
+        .status {
+            margin-top: 10px;
+            font-style: italic;
+            color: #666;
         }
     </style>
 </head>
 <body>
-    <h1>Speech to Text Streaming</h1>
-    <button id="startButton">Press and Hold to Speak</button>
+    <h1>Real-time Speech to Text</h1>
+    <p>Press and hold the button to speak</p>
+    <button id="startButton">Hold to Speak</button>
     <div id="result"></div>
+    <div class="status" id="status">Ready</div>
 
     <script>
         const startButton = document.getElementById('startButton');
         const resultDiv = document.getElementById('result');
+        const statusDiv = document.getElementById('status');
         let mediaRecorder;
         let audioChunks = [];
         let isRecording = false;
+        let eventSource;
+        let finalTranscript = '';
 
         // Request microphone access
         startButton.addEventListener('mousedown', async () => {
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                mediaRecorder = new MediaRecorder(stream);
+                statusDiv.textContent = 'Initializing microphone...';
+                
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        sampleRate: 16000
+                    } 
+                });
+                
+                statusDiv.textContent = 'Recording...';
+                startButton.classList.add('recording');
+                
+                const options = { mimeType: 'audio/webm; codecs=opus' };
+                mediaRecorder = new MediaRecorder(stream, options);
                 audioChunks = [];
                 
                 mediaRecorder.ondataavailable = (e) => {
-                    audioChunks.push(e.data);
-                };
-                
-                mediaRecorder.onstop = async () => {
-                    const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-                    
-                    // Convert to array buffer for sending
-                    const arrayBuffer = await audioBlob.arrayBuffer();
-                    
-                    // Send to server
-                    try {
-                        const response = await fetch('/api/stream', {
-                            method: 'POST',
-                            body: arrayBuffer,
-                            headers: {
-                                'Content-Type': 'application/octet-stream'
-                            }
-                        });
-                        
-                        const data = await response.json();
-                        if (data.status === 'success') {
-                            resultDiv.textContent += data.text + ' ';
-                        } else {
-                            console.error('Error:', data.text);
-                        }
-                    } catch (error) {
-                        console.error('Fetch error:', error);
+                    if (e.data.size > 0) {
+                        audioChunks.push(e.data);
+                        sendAudioToServer();
                     }
                 };
                 
-                mediaRecorder.start(100); // Collect data every 100ms
+                // Start Server-Sent Events connection
+                eventSource = new EventSource('/api/stream_events');
+                eventSource.onmessage = (e) => {
+                    const data = JSON.parse(e.data);
+                    if (data.status === 'success' && data.text) {
+                        finalTranscript += data.text + ' ';
+                        resultDiv.textContent = finalTranscript;
+                        statusDiv.textContent = 'Processing...';
+                    } else if (data.status === 'no-speech') {
+                        statusDiv.textContent = 'No speech detected';
+                    }
+                };
+                
+                mediaRecorder.start(500); // Collect data every 500ms
                 isRecording = true;
-                startButton.style.backgroundColor = '#f44336';
+                
             } catch (error) {
-                console.error('Error accessing microphone:', error);
-                resultDiv.textContent = 'Error accessing microphone. Please allow microphone access.';
+                console.error('Error:', error);
+                statusDiv.textContent = 'Error accessing microphone';
+                startButton.classList.remove('recording');
             }
         });
 
@@ -96,10 +114,25 @@
             if (isRecording && mediaRecorder) {
                 mediaRecorder.stop();
                 isRecording = false;
-                startButton.style.backgroundColor = '#4CAF50';
+                startButton.classList.remove('recording');
+                statusDiv.textContent = 'Processing final audio...';
+                
+                // Close SSE connection
+                if (eventSource) {
+                    eventSource.close();
+                }
                 
                 // Stop all tracks
                 mediaRecorder.stream.getTracks().forEach(track => track.stop());
+                
+                // Send any remaining audio
+                if (audioChunks.length > 0) {
+                    sendAudioToServer(true);
+                }
+                
+                setTimeout(() => {
+                    statusDiv.textContent = 'Ready. Final result: ' + finalTranscript;
+                }, 1000);
             }
         });
 
@@ -113,6 +146,38 @@
             e.preventDefault();
             startButton.dispatchEvent(new Event('mouseup'));
         });
+
+        async function sendAudioToServer(final = false) {
+            if (audioChunks.length === 0) return;
+            
+            const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+            audioChunks = []; // Clear for next chunk
+            
+            try {
+                const response = await fetch('/api/stream', {
+                    method: 'POST',
+                    body: audioBlob,
+                    headers: {
+                        'Content-Type': 'audio/webm'
+                    }
+                });
+                
+                const data = await response.json();
+                if (data.status === 'success' && data.text) {
+                    finalTranscript += data.text + ' ';
+                    resultDiv.textContent = finalTranscript;
+                }
+                
+                if (final) {
+                    statusDiv.textContent = 'Final result: ' + finalTranscript;
+                } else {
+                    statusDiv.textContent = 'Recording...';
+                }
+            } catch (error) {
+                console.error('Error sending audio:', error);
+                statusDiv.textContent = 'Error sending audio';
+            }
+        }
     </script>
 </body>
 </html>
