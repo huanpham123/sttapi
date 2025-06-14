@@ -1,2 +1,6 @@
 Flask
-google-cloud-speech
+faster-whisper
+torch
+torchaudio
+simple-websocket
+numpy
